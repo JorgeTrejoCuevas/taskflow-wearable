@@ -4,9 +4,11 @@
 //  Conectada al backend Spring Boot en Railway
 // ============================================================
 
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'api_cliente.dart'; // Práctica 11: cliente HTTP reemplazable en pruebas
+import 'logica.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 const String API_URL = 'https://taskflow-api-production-eb68.up.railway.app';
@@ -98,19 +100,24 @@ class _PantallaLoginState extends State<PantallaLogin> {
   String _error = '';
 
   Future<void> _login() async {
+    // Práctica 12: validación local antes de llamar al servidor
+    if (_correoCtrl.text.trim().isEmpty || _passCtrl.text.isEmpty) {
+      setState(() => _error = 'Escribe tu correo y contraseña');
+      return;
+    }
     setState(() {
       _cargando = true;
       _error = '';
     });
     try {
-      final res = await http.post(
+      final res = await clienteHttp.post(
         Uri.parse('$API_URL/api/auth/login'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'correo': _correoCtrl.text.trim(),
           'password': _passCtrl.text,
         }),
-      );
+      ).timeout(tiempoLimite);
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         await _storage.write(key: _keyToken, value: data['token']);
@@ -121,14 +128,24 @@ class _PantallaLoginState extends State<PantallaLogin> {
           context,
           MaterialPageRoute(builder: (_) => const PantallaTareas()),
         );
+      } else if (res.statusCode >= 500) {
+        setState(() => _error = 'Error del servidor (${res.statusCode})');
       } else {
         setState(() => _error = 'Credenciales incorrectas');
       }
     } catch (e) {
-      setState(() => _error = 'Sin conexión');
+      if (mounted) setState(() => _error = 'Sin conexión');
     } finally {
-      setState(() => _cargando = false);
+      if (mounted) setState(() => _cargando = false);
     }
+  }
+
+  @override
+  void dispose() {
+    // Práctica 12: liberar recursos
+    _correoCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
   }
 
   @override
@@ -292,6 +309,8 @@ class _PantallaTareasState extends State<PantallaTareas> {
   String _nombre = '';
   int _indice = 0;
   String _filtro = 'pendiente';
+  int _peticionActual = 0; // Práctica 12: ignora respuestas viejas
+  bool _actualizando = false; // Práctica 12: evita dobles envíos
 
   final List<String> _filtros = ['pendiente', 'progreso', 'finalizado'];
   final Map<String, Color> _colores = {
@@ -307,6 +326,8 @@ class _PantallaTareasState extends State<PantallaTareas> {
   }
 
   Future<void> _cargarTareas() async {
+    final reloj = Stopwatch()..start(); // Práctica 12: medición
+    final miPeticion = ++_peticionActual;
     setState(() {
       _cargando = true;
       _error = '';
@@ -316,32 +337,46 @@ class _PantallaTareasState extends State<PantallaTareas> {
       final nombre = await _storage.read(key: _keyNombre);
       setState(() => _nombre = nombre ?? '');
 
-      final res = await http.get(
-        Uri.parse('$API_URL/api/tareas'),
+      // Práctica 12: pide solo las tareas del filtro (antes descargaba todas)
+      final res = await clienteHttp.get(
+        Uri.parse('$API_URL/api/tareas/estado/$_filtro'),
         headers: {'Authorization': 'Bearer $token'},
-      );
+      ).timeout(tiempoLimite);
+      if (miPeticion != _peticionActual || !mounted) return;
+      debugPrint('[PERF] GET /api/tareas -> ${res.statusCode} en ${reloj.elapsedMilliseconds} ms, ${res.bodyBytes.length} bytes');
 
       if (res.statusCode == 200) {
         final todas = jsonDecode(res.body) as List;
         setState(() {
-          _tareas = todas.where((t) => t['estado'] == _filtro).toList();
+          _tareas = filtrarPorEstado(todas, _filtro);
           _indice = 0;
           _cargando = false;
         });
-      } else if (res.statusCode == 401) {
-        await _storage.deleteAll();
-        if (!mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const PantallaLogin()),
-        );
+      } else if (res.statusCode == 401 || res.statusCode == 403) {
+        await _sesionVencida();
+      } else {
+        // Práctica 12: antes no había rama aquí y la pantalla se quedaba cargando
+        setState(() {
+          _error = 'Error del servidor (${res.statusCode})';
+          _cargando = false;
+        });
       }
     } catch (e) {
+      if (miPeticion != _peticionActual || !mounted) return;
       setState(() {
         _error = 'Sin conexión';
         _cargando = false;
       });
     }
+  }
+
+  Future<void> _sesionVencida() async {
+    await _storage.deleteAll();
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const PantallaLogin()),
+    );
   }
 
   Future<void> _cambiarFiltro(String filtro) async {
@@ -350,19 +385,36 @@ class _PantallaTareasState extends State<PantallaTareas> {
   }
 
   Future<void> _cambiarEstado(Map tarea, String nuevoEstado) async {
+    if (_actualizando) return; // Práctica 12: ignora el doble toque
+    _actualizando = true;
+    final reloj = Stopwatch()..start(); // Práctica 12: medición
+    final llave = nuevaLlaveIdempotencia();
     try {
       final token = await _storage.read(key: _keyToken);
-      await http.put(
-        Uri.parse('$API_URL/api/tareas/${tarea['id']}'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({...tarea, 'estado': nuevoEstado}),
-      );
-      await _cargarTareas();
+      // Práctica 12: PATCH solo del estado, con reintento y la misma llave
+      final res = await conReintentos((intento) => clienteHttp.patch(
+            Uri.parse('$API_URL/api/tareas/${tarea['id']}/estado'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+              'Idempotency-Key': llave,
+            },
+            body: jsonEncode({'estado': nuevoEstado}),
+          ).timeout(tiempoLimite));
+      debugPrint('[PERF] PATCH /api/tareas/${tarea['id']}/estado -> ${res.statusCode} en ${reloj.elapsedMilliseconds} ms');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        await _cargarTareas();
+        debugPrint('[PERF] operación completa (PATCH + recarga) en ${reloj.elapsedMilliseconds} ms');
+      } else if (res.statusCode == 401 || res.statusCode == 403) {
+        await _sesionVencida();
+      } else {
+        setState(() => _error = 'No se pudo actualizar');
+      }
     } catch (e) {
-      setState(() => _error = 'No se pudo actualizar');
+      if (mounted) setState(() => _error = 'No se pudo actualizar');
+    } finally {
+      _actualizando = false;
     }
   }
 
@@ -537,7 +589,13 @@ class _PantallaTareasState extends State<PantallaTareas> {
             if (_tareas.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
+                // Práctica 12: con más de 7 tareas se muestra "3 / 57" (antes se desbordaba)
+                child: _tareas.length > 7
+                    ? Text(
+                        '${_indice + 1} / ${_tareas.length}',
+                        style: const TextStyle(color: Colors.white54, fontSize: 8),
+                      )
+                    : Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: List.generate(
                     _tareas.length,
@@ -592,7 +650,7 @@ class _TarjetaTarea extends StatelessWidget {
           ),
           const SizedBox(height: 3),
           Text(
-            tarea['hora']?.toString().substring(0, 5) ?? '',
+            formatearHora(tarea['hora']),
             style: const TextStyle(color: Colors.white54, fontSize: 9),
           ),
           const SizedBox(height: 3),

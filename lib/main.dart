@@ -4,7 +4,6 @@
 //  Conectada al backend Spring Boot en Railway
 // ============================================================
 
-import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'api_cliente.dart'; // Práctica 11: cliente HTTP reemplazable en pruebas

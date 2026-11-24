@@ -50,11 +50,11 @@ void main() {
     await avanzar(t, const Duration(seconds: 1));
   }
 
-  final lista = (http.Request _, int __) async => http.Response(jsonEncode(_tareas), 200, headers: _json);
+  final lista = (http.Request _, int _) async => http.Response(jsonEncode(_tareas), 200, headers: _json);
   int puts() => peticiones.where((p) => esEscritura(p)).length;
 
   testWidgets('RES-01 Pérdida de Internet durante una consulta -> error controlado', (t) async {
-    servidor((_, __) async => throw const SocketException('sin red'));
+    servidor((_, _) async => throw const SocketException('sin red'));
     await abrirTareas(t);
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(find.textContaining('Sin conexión'), findsOneWidget);
@@ -72,7 +72,7 @@ void main() {
   });
 
   testWidgets('RES-03 Servidor sin respuesta -> timeout controlado (máx. 15 s)', (t) async {
-    servidor((_, __) => Completer<http.Response>().future); // nunca responde
+    servidor((_, _) => Completer<http.Response>().future); // nunca responde
     await abrirTareas(t);
     await avanzar(t, const Duration(seconds: 15));
     expect(find.byType(CircularProgressIndicator), findsNothing,
@@ -80,7 +80,7 @@ void main() {
   });
 
   testWidgets('RES-04 Respuesta HTTP 500 -> muestra error y conserva estabilidad', (t) async {
-    servidor((_, __) async => http.Response('', 500));
+    servidor((_, _) async => http.Response('', 500));
     await abrirTareas(t);
     await avanzar(t, const Duration(seconds: 15));
     expect(find.byType(CircularProgressIndicator), findsNothing);
@@ -88,13 +88,13 @@ void main() {
   });
 
   testWidgets('RES-05a Respuesta 401 -> cierra sesión y vuelve al login', (t) async {
-    servidor((_, __) async => http.Response('', 401));
+    servidor((_, _) async => http.Response('', 401));
     await abrirTareas(t);
     expect(find.text('Inicia sesión'), findsOneWidget);
   });
 
   testWidgets('RES-05b Respuesta 403 (así responde Railway a un token vencido) -> vuelve al login', (t) async {
-    servidor((_, __) async => http.Response('', 403));
+    servidor((_, _) async => http.Response('', 403));
     await abrirTareas(t);
     await avanzar(t, const Duration(seconds: 2));
     expect(find.text('Inicia sesión'), findsOneWidget,

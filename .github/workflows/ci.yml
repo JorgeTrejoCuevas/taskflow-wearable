@@ -1,0 +1,55 @@
+# ============================================================
+#  TaskFlow Wearable — Integración continua (Prácticas 13 y 14)
+#  Análisis estático + pruebas unitarias, de widgets y de
+#  resiliencia con cobertura, en cada push o pull request.
+# ============================================================
+name: CI Wearable
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  pruebas:
+    name: Análisis y pruebas (Flutter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Instalar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Versión de Flutter
+        run: flutter --version
+
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      - name: Análisis estático
+        run: flutter analyze --no-fatal-infos
+
+      - name: Pruebas con cobertura
+        run: flutter test --coverage --reporter expanded
+
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          if [ -f coverage/lcov.info ]; then
+            awk -F: '/^LF:/{lf+=$2} /^LH:/{lh+=$2} END {printf "## Cobertura de líneas: %.1f %% (%d de %d)\n", 100*lh/lf, lh, lf}' coverage/lcov.info >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Guardar cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobertura-wearable
+          path: coverage/lcov.info
